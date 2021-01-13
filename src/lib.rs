@@ -62,17 +62,14 @@ fn main() {
 use std::str::FromStr;
 use std::sync::Arc;
 
-extern crate num;
-use num::complex::Complex;
-use num::traits::{Float, Signed, Zero};
+use num_complex::Complex;
+use num_traits::{Float, Signed, Zero};
 
-extern crate apodize;
+use apodize;
 
-extern crate strider;
 use strider::{SliceRing, SliceRingImpl};
 
-extern crate rustfft;
-use rustfft::{FFT,FFTnum,FFTplanner};
+use rustfft::{Fft, FftNum, FftPlanner};
 
 /// returns `0` if `log10(value).is_negative()`.
 /// otherwise returns `log10(value)`.
@@ -82,12 +79,12 @@ use rustfft::{FFT,FFTnum,FFTplanner};
 /// this sets very small values to zero which may not be
 /// what you want depending on your application.
 #[inline]
-pub fn log10_positive<T: Float + Signed + Zero>(value: T) -> T {
+pub fn log10_positive<T: Float + Signed + Zero + std::fmt::Debug>(value: T) -> T {
     // Float.log10
     // Signed.is_negative
     // Zero.zero
-    let log = value.log10();
-    if log.is_negative() {
+    let log: T = value.log10();
+    if !log.is_nan() && log.is_negative() {
         T::zero()
     } else {
         log
@@ -129,11 +126,13 @@ impl std::fmt::Display for WindowType {
 }
 
 // TODO write a macro that does this automatically for any enum
-static WINDOW_TYPES: [WindowType; 5] = [WindowType::Hanning,
-                                        WindowType::Hamming,
-                                        WindowType::Blackman,
-                                        WindowType::Nuttall,
-                                        WindowType::None];
+static WINDOW_TYPES: [WindowType; 5] = [
+    WindowType::Hanning,
+    WindowType::Hamming,
+    WindowType::Blackman,
+    WindowType::Nuttall,
+    WindowType::None,
+];
 
 impl WindowType {
     pub fn values() -> [WindowType; 5] {
@@ -142,30 +141,50 @@ impl WindowType {
 }
 
 pub struct STFT<T>
-    where T: FFTnum + FromF64 + num::Float
+where
+    T: FftNum + FromF64 + Float,
 {
     pub window_size: usize,
     pub step_size: usize,
-    pub fft: Arc<FFT<T>>,
+    pub fft: Arc<dyn Fft<T>>,
     pub window: Option<Vec<T>>,
     /// internal ringbuffer used to store samples
     pub sample_ring: SliceRingImpl<T>,
     pub real_input: Vec<T>,
     pub complex_input: Vec<Complex<T>>,
     pub complex_output: Vec<Complex<T>>,
+    complex_scratch: Vec<Complex<T>>,
 }
 
 impl<T> STFT<T>
-    where T: FFTnum + FromF64 + num::Float
+where
+    T: FftNum + FromF64 + Float,
 {
-    pub fn window_type_to_window_vec(window_type: WindowType,
-                                     window_size: usize)
-                                     -> Option<Vec<T>> {
+    pub fn window_type_to_window_vec(
+        window_type: WindowType,
+        window_size: usize,
+    ) -> Option<Vec<T>> {
         match window_type {
-            WindowType::Hanning => Some(apodize::hanning_iter(window_size).map(FromF64::from_f64).collect()),
-            WindowType::Hamming => Some(apodize::hamming_iter(window_size).map(FromF64::from_f64).collect()),
-            WindowType::Blackman => Some(apodize::blackman_iter(window_size).map(FromF64::from_f64).collect()),
-            WindowType::Nuttall => Some(apodize::nuttall_iter(window_size).map(FromF64::from_f64).collect()),
+            WindowType::Hanning => Some(
+                apodize::hanning_iter(window_size)
+                    .map(FromF64::from_f64)
+                    .collect(),
+            ),
+            WindowType::Hamming => Some(
+                apodize::hamming_iter(window_size)
+                    .map(FromF64::from_f64)
+                    .collect(),
+            ),
+            WindowType::Blackman => Some(
+                apodize::blackman_iter(window_size)
+                    .map(FromF64::from_f64)
+                    .collect(),
+            ),
+            WindowType::Nuttall => Some(
+                apodize::nuttall_iter(window_size)
+                    .map(FromF64::from_f64)
+                    .collect(),
+            ),
             WindowType::None => None,
         }
     }
@@ -176,31 +195,28 @@ impl<T> STFT<T>
     }
 
     // TODO this should ideally take an iterator and not a vec
-    pub fn new_with_window_vec(window: Option<Vec<T>>,
-                                  window_size: usize,
-                                  step_size: usize)
-                                  -> Self {
+    pub fn new_with_window_vec(
+        window: Option<Vec<T>>,
+        window_size: usize,
+        step_size: usize,
+    ) -> Self {
         // TODO more assertions:
         // window_size is power of two
         // step_size > 0
         assert!(step_size <= window_size);
-        let inverse = false;
-        let mut planner = FFTplanner::new(inverse);
+        let mut planner = FftPlanner::new();
+        let fft = planner.plan_fft_forward(window_size);
+        let outofplace_scratch_len = fft.get_outofplace_scratch_len();
         STFT {
-            window_size: window_size,
-            step_size: step_size,
-            fft: planner.plan_fft(window_size),
+            window_size,
+            step_size,
+            fft,
             sample_ring: SliceRingImpl::new(),
-            window: window,
-            real_input: std::iter::repeat(T::zero())
-                            .take(window_size)
-                            .collect(),
-            complex_input: std::iter::repeat(Complex::<T>::zero())
-                               .take(window_size)
-                               .collect(),
-            complex_output: std::iter::repeat(Complex::<T>::zero())
-                                .take(window_size)
-                                .collect(),
+            window,
+            real_input: vec![T::zero(); window_size],
+            complex_input: vec![Complex::<T>::zero(); window_size],
+            complex_output: vec![Complex::<T>::zero(); window_size],
+            complex_scratch: vec![Complex::<T>::zero(); outofplace_scratch_len],
         }
     }
 
@@ -238,11 +254,15 @@ impl<T> STFT<T>
 
         // copy windowed real_input as real parts into complex_input
         for (dst, src) in self.complex_input.iter_mut().zip(self.real_input.iter()) {
-            dst.re = src.clone();
+            dst.re = *src;
         }
 
         // compute fft
-        self.fft.process(&mut self.complex_input, &mut self.complex_output);
+        self.fft.process_outofplace_with_scratch(
+            &mut self.complex_input,
+            &mut self.complex_output,
+            &mut self.complex_scratch,
+        );
     }
 
     /// # Panics
@@ -294,9 +314,13 @@ pub trait FromF64 {
 }
 
 impl FromF64 for f64 {
-    fn from_f64(n: f64) -> Self { n }
+    fn from_f64(n: f64) -> Self {
+        n
+    }
 }
 
 impl FromF64 for f32 {
-    fn from_f64(n: f64) -> Self { n as f32 }
+    fn from_f64(n: f64) -> Self {
+        n as f32
+    }
 }

@@ -1,31 +1,22 @@
 #![feature(test)]
+
 extern crate test;
 
-extern crate num;
-use num::complex::Complex;
+use num_complex::Complex;
+use num_traits::Zero;
 
-extern crate rustfft;
-use rustfft::FFT;
+use rustfft::FftPlanner;
 
-extern crate stft;
-use stft::{STFT, WindowType};
+use stft::{WindowType, STFT};
 
 macro_rules! bench_fft_process {
     ($bencher:expr, $window_size:expr, $float:ty) => {{
-        let inverse = false;
         let window_size = $window_size;
-        let mut fft = FFT::<$float>::new(window_size, inverse);
-        let input = std::iter::repeat(Complex::new(0., 0.))
-            .take(window_size)
-            .collect::<Vec<Complex<$float>>>();
-        let mut output = std::iter::repeat(Complex::new(0., 0.))
-            .take(window_size)
-            .collect::<Vec<Complex<$float>>>();
-        $bencher.iter(|| {
-            fft.process(&input[..], &mut output[..])
-        });
-
-    }}
+        let fft = FftPlanner::<$float>::new().plan_fft_forward(window_size);
+        let mut input = vec![Complex::<$float>::zero(); window_size];
+        // let output = vec![Complex::<$float>::zero(); window_size];
+        $bencher.iter(|| fft.process(&mut input));
+    }};
 }
 
 #[bench]
@@ -41,13 +32,11 @@ fn bench_fft_process_1024_f64(bencher: &mut test::Bencher) {
 macro_rules! bench_stft_compute {
     ($bencher:expr, $window_size:expr, $float:ty) => {{
         let mut stft = STFT::<$float>::new(WindowType::Hanning, $window_size, 0);
-        let input = std::iter::repeat(1.).take($window_size).collect::<Vec<$float>>();
-        let mut output = std::iter::repeat(0.).take(stft.output_size()).collect::<Vec<$float>>();
+        let input: Vec<$float> = vec![0.; $window_size];
+        let mut output: Vec<$float> = vec![0.; stft.output_size()];
         stft.append_samples(&input[..]);
-        $bencher.iter(|| {
-            stft.compute_column(&mut output[..])
-        });
-    }}
+        $bencher.iter(|| stft.compute_column(&mut output));
+    }};
 }
 
 #[bench]
@@ -66,7 +55,9 @@ macro_rules! bench_stft_audio {
         let sample_rate: usize = 44100;
         let seconds: usize = $seconds;
         let sample_count = sample_rate * seconds;
-        let all_samples = (0..sample_count).map(|x| x as $float).collect::<Vec<$float>>();
+        let all_samples = (0..sample_count)
+            .map(|x| x as $float)
+            .collect::<Vec<$float>>();
         $bencher.iter(|| {
             // let's initialize our short-time fourier transform
             let window_type: WindowType = WindowType::Hanning;
@@ -74,8 +65,7 @@ macro_rules! bench_stft_audio {
             let step_size: usize = 512;
             let mut stft = STFT::<$float>::new(window_type, window_size, step_size);
             // we need a buffer to hold a computed column of the spectrogram
-            let mut spectrogram_column: Vec<$float> =
-                std::iter::repeat(0.).take(stft.output_size()).collect();
+            let mut spectrogram_column = vec![0. as $float; stft.output_size()];
             for some_samples in (&all_samples[..]).chunks(3000) {
                 stft.append_samples(some_samples);
                 while stft.contains_enough_to_compute() {
@@ -84,7 +74,7 @@ macro_rules! bench_stft_audio {
                 }
             }
         });
-    }}
+    }};
 }
 
 #[bench]

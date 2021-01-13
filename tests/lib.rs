@@ -1,14 +1,22 @@
 use std::str::FromStr;
 
-extern crate stft;
-use stft::{STFT, WindowType};
+use stft::{WindowType, STFT};
 
 #[test]
 fn test_window_type_from_string() {
-    assert_eq!(WindowType::from_str("Hanning").unwrap(), WindowType::Hanning);
-    assert_eq!(WindowType::from_str("hanning").unwrap(), WindowType::Hanning);
+    assert_eq!(
+        WindowType::from_str("Hanning").unwrap(),
+        WindowType::Hanning
+    );
+    assert_eq!(
+        WindowType::from_str("hanning").unwrap(),
+        WindowType::Hanning
+    );
     assert_eq!(WindowType::from_str("hann").unwrap(), WindowType::Hanning);
-    assert_eq!(WindowType::from_str("blackman").unwrap(), WindowType::Blackman);
+    assert_eq!(
+        WindowType::from_str("blackman").unwrap(),
+        WindowType::Blackman
+    );
 }
 
 #[test]
@@ -20,12 +28,17 @@ fn test_window_type_to_string() {
 fn test_window_types_to_strings() {
     assert_eq!(
         vec!["Hanning", "Hamming", "Blackman", "Nuttall", "None"],
-        WindowType::values().iter().map(|x| x.to_string()).collect::<Vec<String>>());
+        WindowType::values()
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<String>>()
+    );
 }
 
 #[test]
 fn test_log10_positive() {
-    assert!(stft::log10_positive(-1. as f64).is_nan());
+    let expected_nan = stft::log10_positive(-1. as f64);
+    assert!(expected_nan.is_nan(), "{} is not NaN", expected_nan);
     assert_eq!(stft::log10_positive(0.), 0.);
     assert_eq!(stft::log10_positive(1.), 0.);
     assert_eq!(stft::log10_positive(10.), 1.);
